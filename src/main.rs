@@ -149,7 +149,7 @@ fn game_loop(
 				NetMsg::Fire(x, y) => (x, y),
 				m => panic!("Unexpected {:?}", m),
 			};
-			println!("The enemy fired at {}{}!", (aim.0 + b'A') as char, aim.1);
+			println!("The enemy fired at {}{}!", (aim.1 + b'A') as char, aim.0);
 			// Did the enemy hit the ship?
 			let hit = game.board[usize::from(game.you)]
 				.board
