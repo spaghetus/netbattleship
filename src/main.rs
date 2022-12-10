@@ -147,7 +147,7 @@ fn main() {
 			}
 			// Did the enemy sink our ship?
 			if !matches!(hit, Ship::None) && !game.board[game.you as usize].contains(hit) {
-				println!("The enemy has sank our {:?}!", hit);
+				println!("The enemy has sank your {:?}!", hit);
 				write_to(&NetMsg::Sunk(hit), &mut stream);
 			} else {
 				write_to(&NetMsg::Sunk(Ship::None), &mut stream);

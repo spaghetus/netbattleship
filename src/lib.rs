@@ -58,7 +58,7 @@ impl Ship {
 	}
 
 	pub const fn is_empty(&self) -> bool {
-		matches!(self, Ship::None)
+		self.len() == 0
 	}
 
 	pub const fn len(&self) -> u8 {
