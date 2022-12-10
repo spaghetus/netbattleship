@@ -1,6 +1,7 @@
+#![warn(clippy::pedantic)]
+
 use std::{
 	collections::BTreeMap,
-	default,
 	io::{Read, Write},
 };
 
@@ -12,6 +13,7 @@ pub struct Board {
 }
 
 impl Board {
+	#[must_use]
 	pub fn contains(&self, ship: Ship) -> bool {
 		self.board.iter().any(|(_, this_ship)| this_ship == &ship)
 	}
@@ -57,16 +59,17 @@ impl Ship {
 		.iter()
 	}
 
+	#[must_use]
 	pub const fn is_empty(&self) -> bool {
 		self.len() == 0
 	}
 
+	#[must_use]
 	pub const fn len(&self) -> u8 {
 		match self {
 			Ship::Carrier => 5,
 			Ship::Battleship => 4,
-			Ship::Cruiser => 3,
-			Ship::Submarine => 3,
+			Ship::Cruiser | Ship::Submarine => 3,
 			Ship::Destroyer => 2,
 			_ => 0,
 		}
@@ -81,6 +84,11 @@ impl Ship {
 		for _ in 0..self.len() {
 			if board.board.get(&cursor).is_some() {
 				return false;
+			}
+			if v {
+				cursor.1 += 1;
+			} else {
+				cursor.0 += 1;
 			}
 		}
 
@@ -127,7 +135,7 @@ impl From<Game> for String {
 			let mut right = String::new();
 			for col in 0..10 {
 				left.push(
-					game.board[game.you as usize]
+					game.board[usize::from(game.you)]
 						.board
 						.get(&(col, row))
 						.copied()
@@ -135,7 +143,7 @@ impl From<Game> for String {
 						.into(),
 				);
 				right.push(
-					game.board[1 ^ game.you as usize]
+					game.board[1 ^ usize::from(game.you)]
 						.board
 						.get(&(col, row))
 						.copied()
@@ -159,15 +167,18 @@ pub fn write_to<T: Serialize, W: Write>(value: &T, into: &mut W) {
 	into.write_all(b"\n").expect("bad write");
 }
 
+/// # Panics
+/// Panics if the struct sent by the other player is not a valid `NetMsg`
 pub fn read_from<T: DeserializeOwned, R: Read>(from: &mut R) -> T {
 	let d: Vec<u8> = from.bytes().flatten().take_while(|c| *c != b'\n').collect();
 	serde_cbor::from_slice(&d).unwrap()
 }
 
-pub fn parse_coord(c: String) -> Option<(u8, u8)> {
+#[must_use]
+pub fn parse_coord(c: &str) -> Option<(u8, u8)> {
 	if let [y, x] = &c.chars().take(2).collect::<Vec<_>>()[..] {
 		let y = y.to_ascii_uppercase();
-		if !('A'..='J').contains(&y) || !('0'..='9').contains(&x) {
+		if !('A'..='J').contains(&y) || !('0'..='9').contains(x) {
 			return None;
 		}
 		let y = y as u8 - b'A';
