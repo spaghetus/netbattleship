@@ -78,11 +78,14 @@ impl Ship {
 		}
 
 		let mut cursor = pos;
-
 		for _ in 0..self.len() {
 			if board.board.get(&cursor).is_some() {
 				return false;
 			}
+		}
+
+		let mut cursor = pos;
+		for _ in 0..self.len() {
 			board.board.insert(cursor, *self);
 			if v {
 				cursor.1 += 1;
