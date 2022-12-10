@@ -9,3 +9,8 @@ edition = "2021"
 serde = { version = "*", features = ["derive"] }
 serde_cbor = "*"
 structopt = "*"
+
+[profile.release]
+lto = "fat"
+opt-level = 3
+codegen-units = 1
