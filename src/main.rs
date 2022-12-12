@@ -1,5 +1,6 @@
 #![warn(clippy::pedantic)]
-use netbattleship::{parse_coord, read_from, write_to, Game, NetMsg, Ship};
+use netbattleship::net;
+use netbattleship::{net::read_from, net::write_to, net::Msg, ship::Ship, ui::parse_coord, Game};
 use std::io::{stdout, BufRead, Write};
 use std::{
 	net::{SocketAddrV4, TcpListener, TcpStream},
@@ -30,7 +31,7 @@ fn main() {
 	ship_placement(&mut stdin, &mut game, &mut stream);
 
 	println!("Done placing ships! Waiting for the other player...");
-	assert_eq!(NetMsg::Finished, read_from(&mut stream));
+	assert_eq!(Msg::Finished, read_from(&mut stream));
 	println!("Other player is finished! Starting the game...");
 	game_loop(game, stdin, &mut stream);
 	stream
@@ -52,9 +53,9 @@ fn handshake(args: &Args) -> TcpStream {
 		.expect("Failed to connect.")
 	};
 	println!("Got connection...");
-	let msg = NetMsg::Hello(0);
+	let msg = Msg::Hello(0);
 	write_to(&msg, &mut stream);
-	let resp: NetMsg = read_from(&mut stream);
+	let resp: Msg = read_from(&mut stream);
 	assert_eq!(msg, resp);
 	println!("Got good handshake!");
 	stream
@@ -83,7 +84,7 @@ fn ship_placement(
 			}
 		}
 	}
-	write_to(&NetMsg::Finished, stream);
+	net::write_to(&Msg::Finished, stream);
 }
 
 fn game_loop(
@@ -104,17 +105,17 @@ fn game_loop(
 				None => continue,
 			};
 			// Fire
-			write_to(&NetMsg::Fire(coords.0, coords.1), stream);
+			net::write_to(&Msg::Fire(coords.0, coords.1), stream);
 			// Did we hit?
-			let resp = read_from(stream);
+			let resp = net::read_from(stream);
 			match resp {
-				NetMsg::DidHit(false) => {
+				Msg::DidHit(false) => {
 					println!("Miss...");
 					game.board[1 ^ usize::from(game.you)]
 						.board
 						.insert(coords, Ship::Miss);
 				}
-				NetMsg::DidHit(true) => {
+				Msg::DidHit(true) => {
 					println!("Hit!");
 					game.board[1 ^ usize::from(game.you)]
 						.board
@@ -123,30 +124,30 @@ fn game_loop(
 				m => panic!("Unexpected {:?}", m),
 			}
 			// Did we sink?
-			let resp = read_from(stream);
+			let resp = net::read_from(stream);
 			match resp {
-				NetMsg::Sunk(Ship::None) => {}
-				NetMsg::Sunk(s) => {
+				Msg::Sunk(Ship::None) => {}
+				Msg::Sunk(s) => {
 					println!("Sunk {:?}!", s);
 				}
 				m => panic!("Unexpected {:?}", m),
 			}
 			// Is the game over?
-			let resp = read_from(stream);
+			let resp = net::read_from(stream);
 			match resp {
-				NetMsg::Finished => {
+				Msg::Finished => {
 					println!("You win!!!");
 					break;
 				}
-				NetMsg::NotFinished => {}
+				Msg::NotFinished => {}
 				m => panic!("Unexpected {:?}", m),
 			}
 		} else {
 			// Enemy's turn.
 			println!("Waiting for the enemy to aim...");
-			let msg = read_from(stream);
+			let msg = net::read_from(stream);
 			let aim = match msg {
-				NetMsg::Fire(x, y) => (x, y),
+				Msg::Fire(x, y) => (x, y),
 				m => panic!("Unexpected {:?}", m),
 			};
 			println!("The enemy fired at {}{}!", (aim.1 + b'A') as char, aim.0);
@@ -158,20 +159,20 @@ fn game_loop(
 				.unwrap_or(Ship::None);
 			match hit {
 				Ship::None => {
-					write_to(&NetMsg::DidHit(false), stream);
+					net::write_to(&Msg::DidHit(false), stream);
 					println!("The enemy missed.");
 				}
 				s => {
-					write_to(&NetMsg::DidHit(true), stream);
+					net::write_to(&Msg::DidHit(true), stream);
 					println!("The enemy hit your {:?}!", s);
 				}
 			}
 			// Did the enemy sink our ship?
 			if !matches!(hit, Ship::None) && !game.board[usize::from(game.you)].contains(hit) {
 				println!("The enemy has sank your {:?}!", hit);
-				write_to(&NetMsg::Sunk(hit), stream);
+				net::write_to(&Msg::Sunk(hit), stream);
 			} else {
-				write_to(&NetMsg::Sunk(Ship::None), stream);
+				net::write_to(&Msg::Sunk(Ship::None), stream);
 			}
 			// Did we lose?
 			if game.board[usize::from(game.you)]
@@ -180,10 +181,10 @@ fn game_loop(
 				.all(|(_, ship)| ship.is_empty())
 			{
 				println!("You lose!");
-				write_to(&NetMsg::Finished, stream);
+				net::write_to(&Msg::Finished, stream);
 				break;
 			}
-			write_to(&NetMsg::NotFinished, stream);
+			net::write_to(&Msg::NotFinished, stream);
 		}
 		game.turn ^= true;
 	}
