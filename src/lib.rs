@@ -54,7 +54,7 @@ impl From<Game> for String {
 	}
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub enum Phase {
 	#[default]
 	Connecting,
@@ -68,3 +68,5 @@ pub mod net;
 pub mod ui;
 
 pub mod flow;
+
+pub mod flow2;
