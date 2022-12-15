@@ -1,3 +1,5 @@
+use std::io::{stdout, Write};
+
 #[must_use]
 pub fn parse_coord(c: &str) -> Option<(u8, u8)> {
 	if let [y, x] = &c.chars().take(2).collect::<Vec<_>>()[..] {
@@ -11,4 +13,8 @@ pub fn parse_coord(c: &str) -> Option<(u8, u8)> {
 	} else {
 		None
 	}
+}
+
+pub fn flush() {
+	stdout().lock().flush().expect("Broken pipe");
 }

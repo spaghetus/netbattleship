@@ -1,8 +1,5 @@
 #![warn(clippy::pedantic)]
 
-use std::default;
-
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use ship::Ship;
 
 pub mod board;
@@ -63,10 +60,6 @@ pub enum Phase {
 	Done,
 }
 
-pub mod net;
-
-pub mod ui;
-
 pub mod flow;
-
-pub mod flow2;
+pub mod net;
+pub mod ui;

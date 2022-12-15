@@ -1,226 +1,189 @@
-use crate::net::read_from;
-use crate::net::write_to;
-use crate::net::Msg;
-use crate::ship::Ship;
-use crate::Phase;
+use std::{fmt, net::SocketAddr};
 
-use super::Game;
-use std::net::SocketAddr;
-use std::net::TcpListener;
-use std::net::TcpStream;
-use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
-use std::sync::Arc;
-use std::sync::RwLock;
-use std::thread;
-use std::thread::JoinHandle;
-use std::time::Duration;
+use thiserror::Error;
+use tokio::{
+	io::AsyncWriteExt,
+	net::{TcpListener, TcpStream},
+};
 
-pub enum UiMsg {
-	Fire(u8, u8),
-	PlaceShip(u8, u8, bool),
-	Sunk(Ship),
-	DidHit(bool, Option<Ship>),
-	Won(bool),
-	Say(String),
-	NewPhase,
-	NoConnect,
+use crate::{
+	net::{read_from_async, write_to_async, Msg},
+	ship::Ship,
+	Game, Phase,
+};
+
+#[allow(clippy::module_name_repetitions)]
+pub struct GameFlow {
+	state: Game,
+	socket: TcpStream,
 }
 
-pub struct GameFlowServer {
-	pub tx: Sender<UiMsg>,
-	pub rx: Receiver<UiMsg>,
-	pub state: Arc<RwLock<Game>>,
-	pub(crate) _thread: JoinHandle<()>,
+#[derive(Error, Debug)]
+pub enum GameFlowError {
+	Network(#[from] tokio::io::Error),
+	BadMessage(Msg),
+	InvalidPlacement,
+	OutOfOrder,
+	MalformedMessage(#[from] serde_cbor::Error),
+	Mismatch(u64, u64),
 }
 
-impl GameFlowServer {
-	pub(crate) fn game_flow(
-		mut tx: Sender<UiMsg>,
-		mut rx: Receiver<UiMsg>,
-		state: Arc<RwLock<Game>>,
-		addr: SocketAddr,
-		host: bool,
-	) {
-		// Connection phase
-		state.write().unwrap().phase = Phase::Connecting;
-		tx.send(UiMsg::NewPhase).unwrap();
-		let mut stream = handshake(&addr, host);
-		ship_placement(&state, &mut tx, &mut rx, &mut stream);
-		assert_eq!(Msg::Finished, read_from(&mut stream));
-		state.write().unwrap().phase = Phase::Playing;
-		tx.send(UiMsg::NewPhase).unwrap();
-		game_loop(&state, &mut tx, &mut rx, &mut stream);
-		state.write().unwrap().phase = Phase::Done;
-		tx.send(UiMsg::NewPhase).unwrap();
-		stream
-			.shutdown(std::net::Shutdown::Both)
-			.expect("Bad shutdown");
+impl fmt::Display for GameFlowError {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{:?}", self)
 	}
+}
 
-	#[must_use]
-	pub fn new(addr: SocketAddr, host: bool) -> GameFlowServer {
-		let (ui_send, flow_recv) = mpsc::channel();
-		let (flow_send, ui_recv) = mpsc::channel();
-		let state = Arc::new(RwLock::new(Game {
-			you: !host,
-			..Default::default()
-		}));
+const VERSION: u64 = 1;
 
-		GameFlowServer {
-			tx: ui_send,
-			rx: ui_recv,
-			state: state.clone(),
-			_thread: thread::spawn(move || {
-				GameFlowServer::game_flow(flow_send, flow_recv, state.clone(), addr, host);
-			}),
+#[allow(clippy::missing_errors_doc)]
+#[allow(clippy::missing_panics_doc)]
+impl GameFlow {
+	pub async fn new(addr: SocketAddr, serve: bool) -> Result<GameFlow, GameFlowError> {
+		let mut socket = Self::handshake(&addr, serve).await?;
+
+		write_to_async(&Msg::Hello(VERSION), &mut socket).await;
+		match read_from_async(&mut socket).await {
+			Msg::Hello(other) => {
+				if other != VERSION {
+					return Err(GameFlowError::Mismatch(VERSION, other));
+				}
+			}
+			m => return Err(GameFlowError::BadMessage(m)),
 		}
+
+		Ok(GameFlow {
+			state: Game {
+				you: serve,
+				turn: true,
+				phase: Phase::Placing(*Ship::into_iter().next().unwrap()),
+				..Default::default()
+			},
+			socket,
+		})
 	}
-}
 
-fn handshake(addr: &SocketAddr, serve: bool) -> TcpStream {
-	let mut stream = if serve {
-		println!("Listening on {}", addr);
-		let list = TcpListener::bind(addr).expect("Failed to listen.");
-		list.accept().expect("Failed to receive connection.").0
-	} else {
-		println!("Connecting to {}", addr);
-		TcpStream::connect_timeout(addr, Duration::from_secs(10)).expect("Failed to connect.")
-	};
-	println!("Got connection...");
-	let msg = Msg::Hello(0);
-	write_to(&msg, &mut stream);
-	let resp: Msg = read_from(&mut stream);
-	assert_eq!(msg, resp);
-	println!("Got good handshake!");
-	stream
-}
-
-fn ship_placement(
-	state: &Arc<RwLock<Game>>,
-	tx: &mut Sender<UiMsg>,
-	rx: &mut Receiver<UiMsg>,
-	stream: &mut TcpStream,
-) {
-	for ship_kind in Ship::into_iter() {
-		tx.send(UiMsg::NewPhase).unwrap();
-		state.write().unwrap().phase = Phase::Placing(ship_kind.clone());
-		loop {
-			if let UiMsg::PlaceShip(x, y, vertical) = rx.recv().unwrap() {
-				let mut game = state.write().unwrap();
-				let you = game.you;
-				if ship_kind.place(&mut game.board[usize::from(you)], (x, y), vertical) {
-					break;
-				}
-				tx.send(UiMsg::Say("Bad placement, try again.".to_string()))
-					.unwrap();
-			}
-		}
-	}
-	write_to(&Msg::Finished, stream);
-}
-
-fn game_loop(
-	state: &Arc<RwLock<Game>>,
-	tx: &mut Sender<UiMsg>,
-	rx: &mut Receiver<UiMsg>,
-	stream: &mut TcpStream,
-) {
-	tx.send(UiMsg::NewPhase).unwrap();
-	loop {
-		if state.read().unwrap().turn == state.read().unwrap().you {
-			// Choose a target
-			let coords = if let UiMsg::Fire(x, y) = rx.recv().unwrap() {
-				(x, y)
-			} else {
-				continue;
-			};
-			// Fire
-			write_to(&Msg::Fire(coords.0, coords.1), stream);
-			// Did we hit?
-			let resp = read_from(stream);
-			match resp {
-				Msg::DidHit(false) => {
-					tx.send(UiMsg::DidHit(false, None)).unwrap();
-					let mut game = state.write().unwrap();
-					let you = game.you;
-					game.board[1 ^ usize::from(you)]
-						.board
-						.insert(coords, Ship::Miss);
-				}
-				Msg::DidHit(true) => {
-					tx.send(UiMsg::DidHit(true, None)).unwrap();
-					let mut game = state.write().unwrap();
-					let you = game.you;
-					game.board[1 ^ usize::from(you)]
-						.board
-						.insert(coords, Ship::Hit);
-				}
-				m => panic!("Unexpected {:?}", m),
-			}
-			// Did we sink?
-			let resp = read_from(stream);
-			match resp {
-				Msg::Sunk(Ship::None) => {}
-				Msg::Sunk(s) => tx.send(UiMsg::Sunk(s)).unwrap(),
-				m => panic!("Unexpected {:?}", m),
-			}
-			// Is the game over?
-			let resp = read_from(stream);
-			match resp {
-				Msg::Finished => {
-					tx.send(UiMsg::Won(true)).unwrap();
-					break;
-				}
-				Msg::NotFinished => {}
-				m => panic!("Unexpected {:?}", m),
-			}
+	async fn handshake(addr: &SocketAddr, serve: bool) -> Result<TcpStream, GameFlowError> {
+		if serve {
+			let listen = TcpListener::bind(addr).await?;
+			Ok(listen.accept().await?.0)
 		} else {
-			// Enemy's turn.
-			let msg = read_from(stream);
-			let aim = match msg {
-				Msg::Fire(x, y) => (x, y),
-				m => panic!("Unexpected {:?}", m),
-			};
-			tx.send(UiMsg::Fire(aim.0, aim.1)).unwrap();
-			// Did the enemy hit the ship?
-			let mut game = state.write().unwrap();
-			let you = game.you;
-			let hit = game.board[usize::from(you)]
-				.board
-				.insert(aim, Ship::Hit)
-				.filter(|v| !matches!(v, Ship::Hit | Ship::None | Ship::Miss))
-				.unwrap_or(Ship::None);
-			match hit {
-				Ship::None => {
-					write_to(&Msg::DidHit(false), stream);
-					tx.send(UiMsg::DidHit(false, None)).unwrap();
-				}
-				s => {
-					write_to(&Msg::DidHit(true), stream);
-					tx.send(UiMsg::DidHit(true, Some(s))).unwrap();
-				}
-			}
-			// Did the enemy sink our ship?
-			if !matches!(hit, Ship::None) && !game.board[usize::from(game.you)].contains(hit) {
-				tx.send(UiMsg::Sunk(hit)).unwrap();
-				write_to(&Msg::Sunk(hit), stream);
-			} else {
-				write_to(&Msg::Sunk(Ship::None), stream);
-			}
-			// Did we lose?
-			if game.board[usize::from(game.you)]
-				.board
-				.iter()
-				.all(|(_, ship)| ship.is_empty())
-			{
-				tx.send(UiMsg::Won(false)).unwrap();
-				write_to(&Msg::Finished, stream);
-				break;
-			}
-			write_to(&Msg::NotFinished, stream);
+			Ok(TcpStream::connect(addr).await?)
 		}
-		state.write().unwrap().turn ^= true;
 	}
+
+	pub fn my_turn(&self) -> bool {
+		self.state.turn == self.state.you
+	}
+
+	pub fn phase(&self) -> Phase {
+		self.state.phase.clone()
+	}
+
+	pub fn place_ship(&mut self, ship: Ship, pos: (u8, u8), v: bool) -> Result<(), GameFlowError> {
+		match self.phase() {
+			Phase::Placing(s) if s == ship => {}
+			_ => return Err(GameFlowError::OutOfOrder),
+		}
+
+		if ship.place(&mut self.state.board[usize::from(self.state.you)], pos, v) {
+			self.state.phase = Ship::into_iter()
+				.skip_while(|&&a| match self.state.phase {
+					Phase::Placing(b) => a != b,
+					_ => unreachable!(),
+				})
+				.skip(1)
+				.map(|v| Phase::Placing(*v))
+				.next()
+				.unwrap_or(Phase::Playing);
+			Ok(())
+		} else {
+			Err(GameFlowError::InvalidPlacement)
+		}
+	}
+
+	pub async fn fire(&mut self, pos: (u8, u8)) -> Result<TurnResults, GameFlowError> {
+		if self.phase() != Phase::Playing || !self.my_turn() {
+			return Err(GameFlowError::OutOfOrder);
+		}
+		// Send the fire message
+		write_to_async(&Msg::Fire(pos.0, pos.1), &mut self.socket).await;
+		// Did we hit?
+		let hit = match read_from_async(&mut self.socket).await {
+			Msg::DidHit(b) => b,
+			m => return Err(GameFlowError::BadMessage(m)),
+		};
+
+		// Place the hit or miss marker
+		self.state.board[usize::from(!self.state.you)]
+			.board
+			.insert(pos, if hit { Ship::Hit } else { Ship::Miss });
+
+		// Did we sink?
+		let sunk = match read_from_async(&mut self.socket).await {
+			Msg::Sunk(Ship::None) => None,
+			Msg::Sunk(s) => Some(s),
+			m => return Err(GameFlowError::BadMessage(m)),
+		};
+		// Did we win?
+		let won = match read_from_async(&mut self.socket).await {
+			Msg::Finished => true,
+			Msg::NotFinished => false,
+			m => return Err(GameFlowError::BadMessage(m)),
+		};
+		self.state.turn = !self.state.turn;
+		Ok(TurnResults {
+			hit: Some(Ship::Hit).filter(|_| hit),
+			sunk,
+			won,
+		})
+	}
+
+	pub async fn receive(&mut self) -> Result<TurnResults, GameFlowError> {
+		if self.phase() != Phase::Playing || self.my_turn() {
+			return Err(GameFlowError::OutOfOrder);
+		}
+
+		let aim = match read_from_async(&mut self.socket).await {
+			Msg::Fire(x, y) => (x, y),
+			m => return Err(GameFlowError::BadMessage(m)),
+		};
+
+		let hit = self.state.board[usize::from(self.state.you)]
+			.board
+			.insert(aim, Ship::Hit)
+			.filter(|v| !matches!(v, Ship::Hit | Ship::None | Ship::Miss));
+		write_to_async(&Msg::DidHit(hit.is_some()), &mut self.socket).await;
+
+		let sunk = hit.filter(|hit| !self.state.board[usize::from(self.state.you)].contains(*hit));
+		write_to_async(&Msg::Sunk(sunk.unwrap_or(Ship::None)), &mut self.socket).await;
+
+		let won = self.state.board[usize::from(self.state.you)]
+			.board
+			.iter()
+			.all(|(_, ship)| ship.is_empty());
+		write_to_async(
+			&if won { Msg::Finished } else { Msg::NotFinished },
+			&mut self.socket,
+		)
+		.await;
+
+		self.state.turn = !self.state.turn;
+		Ok(TurnResults { hit, sunk, won })
+	}
+
+	pub async fn done(mut self) -> Result<(), GameFlowError> {
+		self.socket.shutdown().await?;
+		Ok(())
+	}
+
+	pub fn to_string(&self) -> String {
+		String::from(self.state.clone())
+	}
+}
+
+pub struct TurnResults {
+	pub hit: Option<Ship>,
+	pub sunk: Option<Ship>,
+	pub won: bool,
 }

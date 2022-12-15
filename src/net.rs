@@ -8,7 +8,6 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
-use crate::ship;
 use crate::ship::Ship;
 
 pub fn write_to<T: Serialize, W: Write>(value: &T, into: &mut W) {
