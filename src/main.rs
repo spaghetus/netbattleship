@@ -21,21 +21,21 @@ async fn main() {
 	let args = Args::from_args();
 
 	println!("Connecting...");
-	let mut game = GameFlow::new(std::net::SocketAddr::V4(args.server), args.serve)
+	let game = GameFlow::new(std::net::SocketAddr::V4(args.server), args.serve)
 		.await
 		.expect("Failed to connect");
 	let mut stdin = stdin().lines().flatten();
 
 	println!("Ready! Now, place your ships.");
-	while let Phase::Placing(ship) = game.phase() {
-		println!("{}", game.to_string());
+	while let Phase::Placing(ship) = game.phase().await {
+		println!("{}", game.to_string().await);
 		print!("Place the top-left section of your {:?} (like E5): ", ship);
 		flush();
 		let Some(pos) = parse_coord(&stdin.next().expect("Broken pipe")) else { println!("Those coordinates were malformed, try again."); continue };
 		print!("Vertical (y)? ");
 		flush();
 		let v = stdin.next().expect("Broken pipe").starts_with('y');
-		match game.place_ship(ship, pos, v) {
+		match game.place_ship(ship, pos, v).await {
 			Ok(()) => {}
 			Err(GameFlowError::InvalidPlacement) => println!("Invalid placement, try again."),
 			Err(e) => panic!("{}", e),
@@ -43,9 +43,9 @@ async fn main() {
 	}
 
 	println!("Ready to play! Choose your first target.");
-	while matches!(game.phase(), Phase::Playing) {
-		if game.my_turn() {
-			println!("{}", game.to_string());
+	while matches!(game.phase().await, Phase::Playing) {
+		if game.my_turn().await {
+			println!("{}", game.to_string().await);
 			print!("Choose your target (like E5): ");
 			flush();
 			let Some(aim) = parse_coord(&stdin.next().expect("Broken pipe")) else { println!("Those coordinates were malformed, try again."); continue };

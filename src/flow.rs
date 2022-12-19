@@ -1,12 +1,14 @@
-use std::{fmt, net::SocketAddr};
+use std::{fmt, net::SocketAddr, sync::Arc};
 
 use thiserror::Error;
 use tokio::{
 	io::AsyncWriteExt,
 	net::{TcpListener, TcpStream},
+	sync::RwLock,
 };
 
 use crate::{
+	board::Board,
 	net::{read_from_async, write_to_async, Msg},
 	ship::Ship,
 	Game, Phase,
@@ -14,8 +16,8 @@ use crate::{
 
 #[allow(clippy::module_name_repetitions)]
 pub struct GameFlow {
-	state: Game,
-	socket: TcpStream,
+	pub state: Arc<RwLock<Game>>,
+	pub socket: Arc<RwLock<TcpStream>>,
 }
 
 #[derive(Error, Debug)]
@@ -26,6 +28,7 @@ pub enum GameFlowError {
 	OutOfOrder,
 	MalformedMessage(#[from] serde_cbor::Error),
 	Mismatch(u64, u64),
+	Busy(#[from] std::sync::TryLockError<()>),
 }
 
 impl fmt::Display for GameFlowError {
@@ -53,13 +56,13 @@ impl GameFlow {
 		}
 
 		Ok(GameFlow {
-			state: Game {
+			state: Arc::new(RwLock::new(Game {
 				you: serve,
 				turn: true,
 				phase: Phase::Placing(*Ship::into_iter().next().unwrap()),
 				..Default::default()
-			},
-			socket,
+			})),
+			socket: Arc::new(RwLock::new(socket)),
 		})
 	}
 
@@ -72,23 +75,32 @@ impl GameFlow {
 		}
 	}
 
-	pub fn my_turn(&self) -> bool {
-		self.state.turn == self.state.you
+	pub async fn my_turn(&self) -> bool {
+		let state = self.state.read().await;
+		state.turn == state.you
 	}
 
-	pub fn phase(&self) -> Phase {
-		self.state.phase.clone()
+	pub async fn phase(&self) -> Phase {
+		self.state.read().await.phase.clone()
 	}
 
-	pub fn place_ship(&mut self, ship: Ship, pos: (u8, u8), v: bool) -> Result<(), GameFlowError> {
-		match self.phase() {
+	pub async fn place_ship(
+		&self,
+		ship: Ship,
+		pos: (u8, u8),
+		v: bool,
+	) -> Result<(), GameFlowError> {
+		match self.phase().await {
 			Phase::Placing(s) if s == ship => {}
 			_ => return Err(GameFlowError::OutOfOrder),
 		}
 
-		if ship.place(&mut self.state.board[usize::from(self.state.you)], pos, v) {
-			self.state.phase = Ship::into_iter()
-				.skip_while(|&&a| match self.state.phase {
+		let mut state = self.state.write().await;
+		let you = state.you;
+
+		if ship.place(&mut state.board[usize::from(you)], pos, v) {
+			state.phase = Ship::into_iter()
+				.skip_while(|&&a| match state.phase {
 					Phase::Placing(b) => a != b,
 					_ => unreachable!(),
 				})
@@ -102,87 +114,120 @@ impl GameFlow {
 		}
 	}
 
-	pub async fn fire(&mut self, pos: (u8, u8)) -> Result<TurnResults, GameFlowError> {
-		if self.phase() != Phase::Playing || !self.my_turn() {
+	pub async fn fire(&self, pos: (u8, u8)) -> Result<TurnResults, GameFlowError> {
+		if self.phase().await != Phase::Playing || !self.my_turn().await {
 			return Err(GameFlowError::OutOfOrder);
 		}
+
+		let mut socket = self.socket.write().await;
+
 		// Send the fire message
-		write_to_async(&Msg::Fire(pos.0, pos.1), &mut self.socket).await;
+		write_to_async(&Msg::Fire(pos.0, pos.1), &mut *socket).await;
 		// Did we hit?
-		let hit = match read_from_async(&mut self.socket).await {
+		let hit = match read_from_async(&mut *socket).await {
 			Msg::DidHit(b) => b,
 			m => return Err(GameFlowError::BadMessage(m)),
 		};
 
+		let mut state = self.state.write().await;
+		let you = state.you;
+
 		// Place the hit or miss marker
-		self.state.board[usize::from(!self.state.you)]
+		state.board[usize::from(!you)]
 			.board
 			.insert(pos, if hit { Ship::Hit } else { Ship::Miss });
 
 		// Did we sink?
-		let sunk = match read_from_async(&mut self.socket).await {
+		let sunk = match read_from_async(&mut *socket).await {
 			Msg::Sunk(Ship::None) => None,
 			Msg::Sunk(s) => Some(s),
 			m => return Err(GameFlowError::BadMessage(m)),
 		};
 		// Did we win?
-		let won = match read_from_async(&mut self.socket).await {
-			Msg::Finished => true,
+		let won = match read_from_async(&mut *socket).await {
+			Msg::Finished => {
+				state.phase = Phase::Done(true);
+				true
+			}
 			Msg::NotFinished => false,
 			m => return Err(GameFlowError::BadMessage(m)),
 		};
-		self.state.turn = !self.state.turn;
+		state.turn = !state.turn;
 		Ok(TurnResults {
 			hit: Some(Ship::Hit).filter(|_| hit),
 			sunk,
 			won,
+			aim: pos,
 		})
 	}
 
-	pub async fn receive(&mut self) -> Result<TurnResults, GameFlowError> {
-		if self.phase() != Phase::Playing || self.my_turn() {
+	pub async fn receive(&self) -> Result<TurnResults, GameFlowError> {
+		if self.phase().await != Phase::Playing || self.my_turn().await {
 			return Err(GameFlowError::OutOfOrder);
 		}
 
-		let aim = match read_from_async(&mut self.socket).await {
+		let aim = match read_from_async(&mut *self.socket.write().await).await {
 			Msg::Fire(x, y) => (x, y),
 			m => return Err(GameFlowError::BadMessage(m)),
 		};
 
-		let hit = self.state.board[usize::from(self.state.you)]
+		let mut state = self.state.write().await;
+		let you = state.you;
+
+		let hit = state.board[usize::from(you)]
 			.board
 			.insert(aim, Ship::Hit)
 			.filter(|v| !matches!(v, Ship::Hit | Ship::None | Ship::Miss));
-		write_to_async(&Msg::DidHit(hit.is_some()), &mut self.socket).await;
+		write_to_async(&Msg::DidHit(hit.is_some()), &mut *self.socket.write().await).await;
 
-		let sunk = hit.filter(|hit| !self.state.board[usize::from(self.state.you)].contains(*hit));
-		write_to_async(&Msg::Sunk(sunk.unwrap_or(Ship::None)), &mut self.socket).await;
+		let sunk = hit.filter(|hit| !state.board[usize::from(you)].contains(*hit));
+		write_to_async(
+			&Msg::Sunk(sunk.unwrap_or(Ship::None)),
+			&mut *self.socket.write().await,
+		)
+		.await;
 
-		let won = self.state.board[usize::from(self.state.you)]
+		let won = state.board[usize::from(you)]
 			.board
 			.iter()
 			.all(|(_, ship)| ship.is_empty());
 		write_to_async(
 			&if won { Msg::Finished } else { Msg::NotFinished },
-			&mut self.socket,
+			&mut *self.socket.write().await,
 		)
 		.await;
 
-		self.state.turn = !self.state.turn;
-		Ok(TurnResults { hit, sunk, won })
+		if won {
+			state.phase = Phase::Done(false);
+		}
+
+		state.turn = !state.turn;
+		Ok(TurnResults {
+			aim,
+			hit,
+			sunk,
+			won,
+		})
 	}
 
-	pub async fn done(mut self) -> Result<(), GameFlowError> {
-		self.socket.shutdown().await?;
+	pub async fn done(self) -> Result<(), GameFlowError> {
+		self.socket.write().await.shutdown().await?;
 		Ok(())
 	}
 
-	pub fn to_string(&self) -> String {
-		String::from(self.state.clone())
+	pub async fn to_string(&self) -> String {
+		String::from(self.state.read().await.clone())
+	}
+
+	pub async fn board(&self, enemy: bool) -> Board {
+		let state = self.state.read().await;
+		let you = state.you;
+		state.board[usize::from(you ^ enemy)].clone()
 	}
 }
 
 pub struct TurnResults {
+	pub aim: (u8, u8),
 	pub hit: Option<Ship>,
 	pub sunk: Option<Ship>,
 	pub won: bool,

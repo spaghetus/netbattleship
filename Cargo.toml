@@ -14,7 +14,8 @@ tokio = {version = "1.23.0", features = ["full"]}
 thiserror = "*"
 
 [[bin]]
-name = "gui"
+name = "netbattleship-gui"
+path = "src/bin/gui.rs"
 required-features = ["gui"]
 
 [profile.release]

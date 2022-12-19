@@ -57,7 +57,7 @@ pub enum Phase {
 	Connecting,
 	Placing(Ship),
 	Playing,
-	Done,
+	Done(bool),
 }
 
 pub mod flow;
