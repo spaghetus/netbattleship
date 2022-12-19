@@ -175,26 +175,27 @@ impl GameFlow {
 			m => return Err(GameFlowError::BadMessage(m)),
 		};
 
-		let hit = {
-			let mut state = self.state.write().await;
-			*state.board[usize::from(you)]
-				.board
-				.entry(aim)
-				.and_modify(|cell| {
-					if cell.is_empty() {
-						*cell = Ship::Miss;
-					} else {
-						*cell = Ship::Hit;
-					}
-				})
-				.or_insert(Ship::Miss)
-		};
-		let hit = Some(hit).filter(|v| !matches!(v, Ship::None | Ship::Miss));
-		write_to_async(&Msg::DidHit(hit.is_some()), &mut *self.socket.write().await).await;
+		let hit = self.board(false).await.board.get(&aim).copied();
+		let hit_ship = hit.filter(|v| !matches!(v, Ship::Hit | Ship::None | Ship::Miss));
+		write_to_async(
+			&Msg::DidHit(hit_ship.is_some()),
+			&mut *self.socket.write().await,
+		)
+		.await;
+		self.state.write().await.board[usize::from(you)]
+			.board
+			.insert(
+				aim,
+				if hit_ship.is_some() || matches!(hit, Some(Ship::Hit)) {
+					Ship::Hit
+				} else {
+					Ship::Miss
+				},
+			);
 
 		let sunk = {
 			let state = self.state.write().await;
-			hit.filter(|hit| !state.board[usize::from(you)].contains(*hit))
+			hit_ship.filter(|hit| !state.board[usize::from(you)].contains(*hit))
 		};
 		write_to_async(
 			&Msg::Sunk(sunk.unwrap_or(Ship::None)),
@@ -225,7 +226,7 @@ impl GameFlow {
 		}
 		Ok(TurnResults {
 			aim,
-			hit,
+			hit: hit_ship,
 			sunk,
 			won,
 		})
