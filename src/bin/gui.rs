@@ -49,6 +49,7 @@ impl Default for App {
 impl eframe::App for App {
 	fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
 		ctx.request_repaint_after(Duration::from_secs(1));
+
 		egui::TopBottomPanel::bottom("messages").show(ctx, |ui| {
 			for msg in self
 				.runtime
@@ -145,7 +146,7 @@ impl App {
 	}
 
 	pub async fn board(&self, ui: &mut Ui) -> Option<(bool, u8, u8)> {
-		if let Some(game) = &mut *self.game.write().await {
+		if let Some(game) = &*self.game.read().await {
 			let mut boards = Vec::with_capacity(2);
 			for team in [false, true] {
 				boards.push((team, game.board(team).await));
