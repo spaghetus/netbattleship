@@ -175,10 +175,21 @@ impl GameFlow {
 			m => return Err(GameFlowError::BadMessage(m)),
 		};
 
-		let hit = self.state.write().await.board[usize::from(you)]
-			.board
-			.insert(aim, Ship::Hit)
-			.filter(|v| !matches!(v, Ship::Hit | Ship::None | Ship::Miss));
+		let hit = {
+			let mut state = self.state.write().await;
+			*state.board[usize::from(you)]
+				.board
+				.entry(aim)
+				.and_modify(|cell| {
+					if cell.is_empty() {
+						*cell = Ship::Miss;
+					} else {
+						*cell = Ship::Hit;
+					}
+				})
+				.or_insert(Ship::Miss)
+		};
+		let hit = Some(hit).filter(|v| !matches!(v, Ship::None | Ship::Miss));
 		write_to_async(&Msg::DidHit(hit.is_some()), &mut *self.socket.write().await).await;
 
 		let sunk = {
