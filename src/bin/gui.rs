@@ -63,6 +63,11 @@ impl eframe::App for App {
 				ui.separator();
 			}
 		});
+
+		egui::TopBottomPanel::top("settings").show(ctx, |ui| {
+			egui::widgets::global_dark_light_mode_switch(ui);
+		});
+
 		egui::CentralPanel::default().show(ctx, |ui| {
 			// Clone the runtime for borrow checker reasons
 			let runtime = self.runtime.clone();
