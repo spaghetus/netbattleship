@@ -14,7 +14,7 @@ jobs:
         with:
           toolchain: stable
           target: x86_64-pc-windows-gnu
-      - runs: |
+      - run: |
           apt-get update && apt-get install -y libspeechd-dev
       - uses: actions-rs/cargo@v1
         with:
