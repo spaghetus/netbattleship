@@ -24,11 +24,13 @@ jobs:
           command: build
           args: --release --all-features --bin netbattleship --bin netbattleship-gui --target x86_64-pc-windows-gnu
       - run: |
-          mkdir out{,/linux,/linux-gui,/windows,/windows-gui}
+          mkdir out{,/linux,/linux-gui,/linux-speech,/windows,/windows-gui,/windows-speech}
           mv target/x86_64-unknown-linux-gnu/release/netbattleship out/linux
           mv target/x86_64-unknown-linux-gnu/release/netbattleship-gui out/linux-gui
+          mv target/x86_64-unknown-linux-gnu/release/netbattleship-speech out/linux-speech
           mv target/x86_64-pc-windows-gnu/release/netbattleship.exe out/windows
           mv target/x86_64-pc-windows-gnu/release/netbattleship-gui.exe out/windows-gui
+          mv target/x86_64-pc-windows-gnu/release/netbattleship-speech.exe out/windows-speech
       - uses: KikimoraGames/itch-publish@v0.0.3
         with:
           butlerApiKey: ${{secrets.ITCHIO_DEPLOY}}
@@ -48,6 +50,14 @@ jobs:
       - uses: KikimoraGames/itch-publish@v0.0.3
         with:
           butlerApiKey: ${{secrets.ITCHIO_DEPLOY}}
+          gameData: ./out/linux-speech
+          itchUsername: handlewithcaregames
+          itchGameId: netbattleship
+          buildChannel: linux-speech
+          buildNumber: ${{ github.ref_name }}
+      - uses: KikimoraGames/itch-publish@v0.0.3
+        with:
+          butlerApiKey: ${{secrets.ITCHIO_DEPLOY}}
           gameData: ./out/windows
           itchUsername: handlewithcaregames
           itchGameId: netbattleship
@@ -60,4 +70,12 @@ jobs:
           itchUsername: handlewithcaregames
           itchGameId: netbattleship
           buildChannel: windows-gui
+          buildNumber: ${{ github.ref_name }}
+      - uses: KikimoraGames/itch-publish@v0.0.3
+        with:
+          butlerApiKey: ${{secrets.ITCHIO_DEPLOY}}
+          gameData: ./out/windows-speech
+          itchUsername: handlewithcaregames
+          itchGameId: netbattleship
+          buildChannel: windows-speech
           buildNumber: ${{ github.ref_name }}
