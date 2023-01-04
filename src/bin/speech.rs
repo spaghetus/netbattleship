@@ -41,8 +41,13 @@ async fn put(tts: &mut Option<Tts>, text: &str) {
 }
 
 async fn wait_for_tts(tts: &mut Option<Tts>) {
+	let mut counter = 0;
 	while let Some(Ok(false)) = tts.as_mut().map(|v| v.is_speaking()) {
-		yield_now().await;
+		tokio::time::sleep(Duration::from_millis(1)).await;
+		if counter > 100 {
+			break;
+		}
+		counter += 1;
 	}
 	while let Some(Ok(true)) = tts.as_mut().map(|v| v.is_speaking()) {
 		yield_now().await;
@@ -204,8 +209,10 @@ async fn main() {
 									Ok(result) => {
 										if result.hit.is_some() {
 											put(&mut tts, "Your shot hit the enemy.").await;
+											wait_for_tts(&mut tts).await;
 										} else {
 											put(&mut tts, "Your shot hit the waves.").await;
+											wait_for_tts(&mut tts).await;
 										}
 										if let Some(ship) = result.sunk {
 											put(
@@ -213,6 +220,7 @@ async fn main() {
 												&format!("You sunk the enemy {:?}!", ship),
 											)
 											.await;
+											wait_for_tts(&mut tts).await;
 										}
 										if result.won {
 											put(&mut tts, "You won the game!").await;
@@ -241,11 +249,14 @@ async fn main() {
 			let result = game.receive().await.unwrap();
 			if let Some(ship) = result.hit {
 				put(&mut tts, &format!("The enemy's shot hit your {:?}.", ship)).await;
+				wait_for_tts(&mut tts).await;
 			} else {
 				put(&mut tts, "The enemy's shot hit the waves.").await;
+				wait_for_tts(&mut tts).await;
 			}
 			if let Some(ship) = result.sunk {
 				put(&mut tts, &format!("The enemy sunk your {:?}.", ship)).await;
+				wait_for_tts(&mut tts).await;
 			}
 			if result.won {
 				put(&mut tts, "You lost the game...").await;
