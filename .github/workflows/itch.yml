@@ -2,7 +2,7 @@ name: "Itch.io Build"
 on:
   push:
     tags:
-      - "*"
+      - "*.*.*"
 
 jobs:
   compile:
@@ -15,7 +15,7 @@ jobs:
           toolchain: stable
           target: x86_64-pc-windows-gnu
       - run: |
-          apt-get update && apt-get install -y libspeechd-dev
+          sudo pt-get update && sudo apt-get install -y libspeechd-dev
       - uses: actions-rs/cargo@v1
         with:
           command: build
